@@ -1,0 +1,932 @@
+-- [[ ABYSS DIE - APENAS ABA PERFIL + MUSIC PLAYER v3 ]]
+-- Execute DEPOIS do DIE v6
+-- FIX: Pause não reinicia | Play/Pause visual correto | músicas que funcionam
+-- + Adicionar música por ID + Renomear
+
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+local SoundService = game:GetService("SoundService")
+local HS = game:GetService("HttpService")
+
+local dieGui = CoreGui:WaitForChild("DIE_Interface", 10)
+if not dieGui then warn("DIE não encontrado!") return end
+local base = dieGui:WaitForChild("Base principal")
+local tela = base:WaitForChild("tela")
+tela.ClipsDescendants = true
+
+-- Não apaga outras abas: só remove a própria se já existir (permite multi-aba)
+local oldPage = tela:FindFirstChild("Page_PERFIL")
+if oldPage then oldPage:Destroy() end
+-- limpa overlays antigos desta aba (ex: confirm delete)
+for _, c in ipairs(tela:GetChildren()) do
+	if c.Name == "ConfirmDelete" and "Page_PERFIL" == "Page_PERFIL" then
+		c:Destroy()
+	end
+end
+
+local function showThisPage(pg)
+	for _, c in ipairs(tela:GetChildren()) do
+		if c:IsA("ScrollingFrame") or (c:IsA("Frame") and tostring(c.Name):sub(1,5) == "Page_") then
+			c.Visible = false
+		end
+	end
+	if pg then pg.Visible = true end
+end
+
+
+local STYLES = {
+	BgColor = Color3.fromRGB(10, 10, 12),
+	CardColor = Color3.fromRGB(18, 18, 22),
+	StrokeColor = Color3.fromRGB(0, 140, 255),
+	TextColor = Color3.fromRGB(245, 245, 255),
+	AccentColor = Color3.fromRGB(0, 100, 220),
+	GreenColor = Color3.fromRGB(40, 180, 80),
+	RedColor = Color3.fromRGB(180, 40, 40),
+	HoloColor = Color3.fromRGB(0, 220, 255),
+	SelectNeon = Color3.fromRGB(255, 220, 50),
+}
+
+local ThemeOptions = {
+	Bg = {
+		Color3.fromRGB(10, 10, 12),
+		Color3.fromRGB(20, 20, 30),
+		Color3.fromRGB(15, 25, 20),
+		Color3.fromRGB(25, 15, 20),
+		Color3.fromRGB(0, 0, 0)
+	},
+	Stroke = {
+		Color3.fromRGB(0, 140, 255),
+		Color3.fromRGB(180, 40, 255),
+		Color3.fromRGB(0, 220, 130),
+		Color3.fromRGB(255, 170, 0),
+		Color3.fromRGB(255, 50, 50)
+	},
+	Text = {
+		Color3.fromRGB(245, 245, 255),
+		Color3.fromRGB(200, 220, 255),
+		Color3.fromRGB(255, 255, 180),
+		Color3.fromRGB(200, 255, 200)
+	},
+	Fonts = {
+		Enum.Font.SourceSans,
+		Enum.Font.SourceSansBold,
+		Enum.Font.Gotham,
+		Enum.Font.GothamBold,
+		Enum.Font.Code,
+		Enum.Font.Ubuntu
+	},
+	StrokeThick = { 0, 1, 1.5, 2, 3 }
+}
+
+local bgIdx, strokeIdx, textIdx, fontIdx, strokeThickIdx = 1, 1, 1, 2, 2
+local currentFont = ThemeOptions.Fonts[2]
+local currentStrokeThick = ThemeOptions.StrokeThick[2]
+local textStrokeEnabled = true
+
+-- ====================== PLAYLIST ======================
+-- IDs conhecidos por funcionar no Roblox (audio públicos)
+local Playlist = {
+	{ id = "rbxassetid://1848354536", name = "Lo-Fi Chill" },
+	{ id = "rbxassetid://1837879082", name = "Epic Orchestra" },
+	{ id = "rbxassetid://1838457617", name = "Clair de Lune" },
+	{ id = "rbxassetid://1843436418", name = "Running" },
+	{ id = "rbxassetid://1846368080", name = "Stadium Rave" },
+}
+
+local PLAYLIST_FILE = "Abyss_MusicPlaylist.json"
+local CONFIG_FILE = "Abyss_PerfilConfig.json"
+local currentTrack = 1
+local isPlaying = false
+local musicVolume = 2.5
+local wasPaused = false -- para saber se é resume ou play do zero
+
+local function savePlaylist()
+	if not writefile then return end
+	pcall(function()
+		writefile(PLAYLIST_FILE, HS:JSONEncode(Playlist))
+	end)
+end
+
+local function saveAllConfig()
+	if not writefile then return end
+	local data = {
+		playlist = Playlist,
+		musicVolume = musicVolume,
+		currentTrack = currentTrack,
+		bgIdx = bgIdx,
+		strokeIdx = strokeIdx,
+		textIdx = textIdx,
+		fontIdx = fontIdx,
+		strokeThickIdx = strokeThickIdx,
+		textStrokeEnabled = textStrokeEnabled,
+		BgColor = {STYLES.BgColor.R, STYLES.BgColor.G, STYLES.BgColor.B},
+		CardColor = {STYLES.CardColor.R, STYLES.CardColor.G, STYLES.CardColor.B},
+		StrokeColor = {STYLES.StrokeColor.R, STYLES.StrokeColor.G, STYLES.StrokeColor.B},
+		TextColor = {STYLES.TextColor.R, STYLES.TextColor.G, STYLES.TextColor.B},
+	}
+	pcall(function()
+		writefile(CONFIG_FILE, HS:JSONEncode(data))
+	end)
+	savePlaylist()
+end
+
+local function loadPlaylist()
+	if not readfile or not isfile or not isfile(PLAYLIST_FILE) then return end
+	local ok, raw = pcall(function() return readfile(PLAYLIST_FILE) end)
+	if not ok or not raw or raw == "" then return end
+	local ok2, decoded = pcall(function() return HS:JSONDecode(raw) end)
+	if ok2 and type(decoded) == "table" and #decoded > 0 then
+		local broken = {
+			["rbxassetid://1845554044"] = true,
+			["rbxassetid://1838457585"] = true,
+			["rbxassetid://1846523151"] = true,
+		}
+		local hasBroken = false
+		for _, t in ipairs(decoded) do
+			if t and broken[tostring(t.id)] then hasBroken = true break end
+		end
+		if not hasBroken then
+			Playlist = decoded
+		end
+	end
+end
+
+local function loadAllConfig()
+	loadPlaylist()
+	if not readfile or not isfile or not isfile(CONFIG_FILE) then return end
+	local ok, raw = pcall(function() return readfile(CONFIG_FILE) end)
+	if not ok or not raw or raw == "" then return end
+	local ok2, data = pcall(function() return HS:JSONDecode(raw) end)
+	if not ok2 or type(data) ~= "table" then return end
+
+	if type(data.playlist) == "table" and #data.playlist > 0 then
+		local broken = {
+			["rbxassetid://1845554044"] = true,
+			["rbxassetid://1838457585"] = true,
+			["rbxassetid://1846523151"] = true,
+		}
+		local hasBroken = false
+		for _, t in ipairs(data.playlist) do
+			if t and broken[tostring(t.id)] then hasBroken = true break end
+		end
+		if not hasBroken then Playlist = data.playlist end
+	end
+	if type(data.musicVolume) == "number" then
+		musicVolume = math.clamp(data.musicVolume, 0, 5)
+	end
+	if type(data.currentTrack) == "number" then
+		currentTrack = math.clamp(data.currentTrack, 1, math.max(1, #Playlist))
+	end
+	if type(data.bgIdx) == "number" then bgIdx = data.bgIdx end
+	if type(data.strokeIdx) == "number" then strokeIdx = data.strokeIdx end
+	if type(data.textIdx) == "number" then textIdx = data.textIdx end
+	if type(data.fontIdx) == "number" then fontIdx = data.fontIdx end
+	if type(data.strokeThickIdx) == "number" then strokeThickIdx = data.strokeThickIdx end
+	if type(data.textStrokeEnabled) == "boolean" then textStrokeEnabled = data.textStrokeEnabled end
+
+	if type(data.BgColor) == "table" then
+		STYLES.BgColor = Color3.new(data.BgColor[1] or 0, data.BgColor[2] or 0, data.BgColor[3] or 0)
+	end
+	if type(data.CardColor) == "table" then
+		STYLES.CardColor = Color3.new(data.CardColor[1] or 0, data.CardColor[2] or 0, data.CardColor[3] or 0)
+	end
+	if type(data.StrokeColor) == "table" then
+		STYLES.StrokeColor = Color3.new(data.StrokeColor[1] or 0, data.StrokeColor[2] or 0, data.StrokeColor[3] or 0)
+	end
+	if type(data.TextColor) == "table" then
+		STYLES.TextColor = Color3.new(data.TextColor[1] or 1, data.TextColor[2] or 1, data.TextColor[3] or 1)
+	end
+
+	currentFont = ThemeOptions.Fonts[math.clamp(fontIdx, 1, #ThemeOptions.Fonts)]
+	currentStrokeThick = ThemeOptions.StrokeThick[math.clamp(strokeThickIdx, 1, #ThemeOptions.StrokeThick)]
+end
+
+loadAllConfig()
+
+-- Sound
+local musicSound = Instance.new("Sound")
+musicSound.Name = "AbyssMusicPlayer"
+musicSound.Volume = musicVolume -- padrão alto (2.5); máximo no + é 5
+musicSound.Looped = false
+musicSound.Parent = SoundService
+
+local playBtn -- declarado cedo para as funções usarem
+
+local function refreshPlayBtn()
+	if not playBtn then return end
+	if isPlaying then
+		playBtn.Text = "⏸ PAUSE"
+		playBtn.BackgroundColor3 = STYLES.SelectNeon
+	else
+		playBtn.Text = "▶ PLAY"
+		playBtn.BackgroundColor3 = STYLES.GreenColor
+	end
+end
+
+local function loadTrack(index, forceRestart)
+	if #Playlist == 0 then return "—" end
+	if index < 1 then index = #Playlist end
+	if index > #Playlist then index = 1 end
+	currentTrack = index
+	local track = Playlist[currentTrack]
+	if track then
+		-- só troca SoundId se for música diferente (evita reiniciar no resume)
+		local newId = track.id
+		if not string.find(newId, "rbxassetid://") then
+			newId = "rbxassetid://" .. tostring(newId)
+		end
+		if forceRestart or musicSound.SoundId ~= newId then
+			musicSound.SoundId = newId
+			wasPaused = false
+		end
+		return track.name
+	end
+	return "—"
+end
+
+local pausedTime = 0 -- guarda posição ao pausar
+
+local function playMusic()
+	if #Playlist == 0 then return end
+	local track = Playlist[currentTrack]
+	if not track then return end
+
+	local newId = track.id
+	if not string.find(tostring(newId), "rbxassetid://") then
+		newId = "rbxassetid://" .. tostring(newId)
+	end
+
+	if musicSound.SoundId ~= newId then
+		musicSound.SoundId = newId
+		pausedTime = 0
+		wasPaused = false
+	end
+
+	-- Resume manual pelo TimePosition (mais confiável que :Resume())
+	if wasPaused and pausedTime > 0 then
+		musicSound.TimePosition = pausedTime
+	end
+
+	musicSound:Play()
+	wasPaused = false
+	isPlaying = true
+	refreshPlayBtn()
+end
+
+local function pauseMusic()
+	if musicSound.IsPlaying or musicSound.Playing then
+		pausedTime = musicSound.TimePosition
+		musicSound:Pause()
+		-- fallback se Pause não segurar
+		if musicSound.IsPlaying then
+			musicSound:Stop()
+			-- TimePosition já foi salvo
+		end
+		wasPaused = true
+	end
+	isPlaying = false
+	refreshPlayBtn()
+end
+
+local function stopMusic()
+	musicSound:Stop()
+	pausedTime = 0
+	wasPaused = false
+	isPlaying = false
+	refreshPlayBtn()
+end
+
+local function nextTrack()
+	wasPaused = false
+	pausedTime = 0
+	loadTrack(currentTrack + 1, true)
+	if isPlaying then
+		playMusic()
+	end
+end
+
+local function prevTrack()
+	wasPaused = false
+	pausedTime = 0
+	loadTrack(currentTrack - 1, true)
+	if isPlaying then
+		playMusic()
+	end
+end
+
+musicSound.Ended:Connect(function()
+	wasPaused = false
+	nextTrack()
+	playMusic()
+end)
+
+-- ====================== UI HELPERS ======================
+local CONTENT_WIDTH, BTN_H, BTN_H_SM, PAD_Y = 0.90, 20, 17, 3
+
+local function applyStyle(inst, cornerRadius, hasStroke, strokeColor)
+	if cornerRadius then
+		local corner = inst:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, cornerRadius)
+		corner.Parent = inst
+	end
+	if hasStroke then
+		local stroke = nil
+		for _, s in ipairs(inst:GetChildren()) do
+			if s:IsA("UIStroke") and s.ApplyStrokeMode == Enum.ApplyStrokeMode.Border then
+				stroke = s
+				break
+			end
+		end
+		if not stroke then
+			stroke = Instance.new("UIStroke")
+			stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			stroke.Parent = inst
+		end
+		stroke.Color = strokeColor or STYLES.StrokeColor
+		stroke.Thickness = 1
+	end
+end
+
+local function createStyledBtn(text, parent, height, strokeColor)
+	height = height or BTN_H
+	local btn = Instance.new("TextButton")
+	btn.Text = text
+	btn.Size = UDim2.new(CONTENT_WIDTH, 0, 0, height)
+	btn.BackgroundColor3 = STYLES.CardColor
+	btn.TextColor3 = STYLES.TextColor
+	btn.Font = Enum.Font.SourceSansBold
+	btn.TextSize = 10
+	btn.TextWrapped = true
+	btn.AutoButtonColor = true
+	btn.Parent = parent
+	applyStyle(btn, 4, true, strokeColor)
+	return btn
+end
+
+local function createLabel(text, parent, height, fontSize)
+	local lbl = Instance.new("TextLabel")
+	lbl.Text = text
+	lbl.Size = UDim2.new(CONTENT_WIDTH, 0, 0, height or 14)
+	lbl.BackgroundTransparency = 1
+	lbl.TextColor3 = STYLES.TextColor
+	lbl.Font = Enum.Font.SourceSans
+	lbl.TextSize = fontSize or 10
+	lbl.TextWrapped = true
+	lbl.TextXAlignment = Enum.TextXAlignment.Center
+	lbl.Parent = parent
+	return lbl
+end
+
+-- Página
+local page = Instance.new("ScrollingFrame")
+page.Name = "Page_PERFIL"
+page.Size = UDim2.new(1, -10, 1, -28)
+page.Position = UDim2.new(0, 5, 0, 22)
+page.BackgroundTransparency = 1
+page.BorderSizePixel = 0
+page.ScrollBarThickness = 3
+page.ScrollBarImageColor3 = STYLES.StrokeColor
+page.CanvasSize = UDim2.new(0, 0, 0, 0)
+page.Visible = true
+page.Parent = tela
+showThisPage(page)
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 2)
+pad.PaddingBottom = UDim.new(0, 8)
+pad.PaddingLeft = UDim.new(0, 6)
+pad.PaddingRight = UDim.new(0, 6)
+pad.Parent = page
+
+local layout = Instance.new("UIListLayout")
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Padding = UDim.new(0, PAD_Y)
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+layout.Parent = page
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	page.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 12)
+end)
+
+-- ====================== PERFIL CARD ======================
+local profileCard = Instance.new("Frame")
+profileCard.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 42)
+profileCard.BackgroundColor3 = STYLES.CardColor
+profileCard.Parent = page
+applyStyle(profileCard, 6, true)
+
+local pfpImg = Instance.new("ImageLabel")
+pfpImg.Size = UDim2.new(0, 32, 0, 32)
+pfpImg.Position = UDim2.new(0, 5, 0.5, -16)
+pfpImg.BackgroundTransparency = 1
+pfpImg.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LP.UserId .. "&w=150&h=150"
+pfpImg.Parent = profileCard
+applyStyle(pfpImg, 16, false)
+
+local welcomeLbl = Instance.new("TextLabel")
+welcomeLbl.Text = "Olá, " .. LP.DisplayName
+welcomeLbl.Size = UDim2.new(1, -46, 1, 0)
+welcomeLbl.Position = UDim2.new(0, 42, 0, 0)
+welcomeLbl.BackgroundTransparency = 1
+welcomeLbl.TextColor3 = STYLES.TextColor
+welcomeLbl.Font = Enum.Font.SourceSansBold
+welcomeLbl.TextSize = 11
+welcomeLbl.TextXAlignment = Enum.TextXAlignment.Left
+welcomeLbl.Parent = profileCard
+
+local creditsLbl = createLabel("Créditos: smarflotus & whatforghell", page, 12, 8)
+creditsLbl.Font = Enum.Font.SourceSansItalic
+
+-- ====================== TEMA (UIStroke fix) ======================
+local function updateGuiTheme()
+	for _, desc in ipairs(page:GetDescendants()) do
+		if desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
+			desc.TextColor3 = STYLES.TextColor
+			desc.Font = currentFont
+
+			local textStroke, borderStroke = nil, nil
+			for _, child in ipairs(desc:GetChildren()) do
+				if child:IsA("UIStroke") then
+					if child.ApplyStrokeMode == Enum.ApplyStrokeMode.Contextual then
+						textStroke = child
+					elseif child.ApplyStrokeMode == Enum.ApplyStrokeMode.Border then
+						borderStroke = child
+					end
+				end
+			end
+
+			if textStrokeEnabled and currentStrokeThick > 0 then
+				if not textStroke then
+					textStroke = Instance.new("UIStroke")
+					textStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+					textStroke.Parent = desc
+				end
+				textStroke.Color = STYLES.StrokeColor
+				textStroke.Thickness = currentStrokeThick
+				textStroke.Transparency = 0.15
+			else
+				if textStroke then textStroke:Destroy() end
+			end
+
+			if borderStroke then
+				borderStroke.Color = STYLES.StrokeColor
+			end
+		elseif desc:IsA("UIStroke") and desc.ApplyStrokeMode == Enum.ApplyStrokeMode.Border then
+			desc.Color = STYLES.StrokeColor
+		elseif desc:IsA("ScrollingFrame") then
+			desc.ScrollBarImageColor3 = STYLES.StrokeColor
+		end
+	end
+end
+
+local bgBtn = createStyledBtn("🎨 COR DO FUNDO", page, BTN_H_SM)
+bgBtn.MouseButton1Click:Connect(function()
+	bgIdx = (bgIdx % #ThemeOptions.Bg) + 1
+	STYLES.BgColor = ThemeOptions.Bg[bgIdx]
+	STYLES.CardColor = Color3.new(
+		math.min(1, STYLES.BgColor.R + 0.04),
+		math.min(1, STYLES.BgColor.G + 0.04),
+		math.min(1, STYLES.BgColor.B + 0.04)
+	)
+	for _, desc in ipairs(page:GetDescendants()) do
+		if (desc:IsA("TextButton") or desc:IsA("TextBox") or desc:IsA("Frame")) and desc.BackgroundTransparency < 0.5 then
+			if desc.Name ~= "ListContainer" then
+				desc.BackgroundColor3 = STYLES.CardColor
+			end
+		end
+	end
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+local strokeBtn = createStyledBtn("✏️ COR DA BORDA", page, BTN_H_SM)
+strokeBtn.MouseButton1Click:Connect(function()
+	strokeIdx = (strokeIdx % #ThemeOptions.Stroke) + 1
+	STYLES.StrokeColor = ThemeOptions.Stroke[strokeIdx]
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+local textBtn = createStyledBtn("🔤 COR DAS LETRAS", page, BTN_H_SM)
+textBtn.MouseButton1Click:Connect(function()
+	textIdx = (textIdx % #ThemeOptions.Text) + 1
+	STYLES.TextColor = ThemeOptions.Text[textIdx]
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+local fontBtn = createStyledBtn("🅰 FONTE DO TEXTO", page, BTN_H_SM)
+fontBtn.MouseButton1Click:Connect(function()
+	fontIdx = (fontIdx % #ThemeOptions.Fonts) + 1
+	currentFont = ThemeOptions.Fonts[fontIdx]
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+local strokeTextBtn = createStyledBtn("✏️ UIStroke TEXTO: ON", page, BTN_H_SM)
+strokeTextBtn.MouseButton1Click:Connect(function()
+	textStrokeEnabled = not textStrokeEnabled
+	strokeTextBtn.Text = textStrokeEnabled and "✏️ UIStroke TEXTO: ON" or "✏️ UIStroke TEXTO: OFF"
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+local thickBtn = createStyledBtn("📏 ESPESSURA STROKE: 1", page, BTN_H_SM)
+thickBtn.MouseButton1Click:Connect(function()
+	strokeThickIdx = (strokeThickIdx % #ThemeOptions.StrokeThick) + 1
+	currentStrokeThick = ThemeOptions.StrokeThick[strokeThickIdx]
+	thickBtn.Text = "📏 ESPESSURA STROKE: " .. tostring(currentStrokeThick)
+	updateGuiTheme()
+	saveAllConfig()
+end)
+
+-- ====================== MUSIC PLAYER ======================
+createLabel("🎵 MUSIC PLAYER", page, 14, 9)
+
+local trackNameLbl = Instance.new("TextLabel")
+trackNameLbl.Text = "♪ —"
+trackNameLbl.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 16)
+trackNameLbl.BackgroundColor3 = STYLES.CardColor
+trackNameLbl.TextColor3 = STYLES.SelectNeon
+trackNameLbl.Font = Enum.Font.SourceSansBold
+trackNameLbl.TextSize = 9
+trackNameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+trackNameLbl.Parent = page
+applyStyle(trackNameLbl, 4, true)
+
+local function refreshTrackName()
+	local t = Playlist[currentTrack]
+	if t then
+		trackNameLbl.Text = "♪ " .. t.name .. "  (" .. currentTrack .. "/" .. #Playlist .. ")"
+	else
+		trackNameLbl.Text = "♪ —"
+	end
+end
+
+-- Controles
+local ctrlRow = Instance.new("Frame")
+ctrlRow.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 22)
+ctrlRow.BackgroundTransparency = 1
+ctrlRow.Parent = page
+
+local function makeCtrlBtn(text, xScale, wScale, color, cb)
+	local b = Instance.new("TextButton")
+	b.Text = text
+	b.Size = UDim2.new(wScale, 0, 1, 0)
+	b.Position = UDim2.new(xScale, 0, 0, 0)
+	b.BackgroundColor3 = color or STYLES.CardColor
+	b.TextColor3 = STYLES.TextColor
+	b.Font = Enum.Font.SourceSansBold
+	b.TextSize = 11
+	b.Parent = ctrlRow
+	applyStyle(b, 4, true)
+	b.MouseButton1Click:Connect(cb)
+	return b
+end
+
+makeCtrlBtn("⏮", 0, 0.22, STYLES.CardColor, function()
+	prevTrack()
+	refreshTrackName()
+	if renderPlaylist then renderPlaylist() end
+end)
+
+playBtn = makeCtrlBtn("▶ PLAY", 0.24, 0.52, STYLES.GreenColor, function()
+	if isPlaying then
+		pauseMusic()
+	else
+		playMusic()
+	end
+	refreshTrackName()
+	if renderPlaylist then renderPlaylist() end
+end)
+
+makeCtrlBtn("⏭", 0.78, 0.22, STYLES.CardColor, function()
+	nextTrack()
+	refreshTrackName()
+	if renderPlaylist then renderPlaylist() end
+end)
+
+-- Volume
+local volRow = Instance.new("Frame")
+volRow.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 18)
+volRow.BackgroundTransparency = 1
+volRow.Parent = page
+
+local volLbl = Instance.new("TextLabel")
+volLbl.Text = "Vol: 250%"
+volLbl.Size = UDim2.new(0.30, 0, 1, 0)
+volLbl.BackgroundTransparency = 1
+volLbl.TextColor3 = STYLES.TextColor
+volLbl.Font = Enum.Font.SourceSansBold
+volLbl.TextSize = 9
+volLbl.Parent = volRow
+
+local function makeVolBtn(text, xScale, cb)
+	local b = Instance.new("TextButton")
+	b.Text = text
+	b.Size = UDim2.new(0.20, 0, 1, 0)
+	b.Position = UDim2.new(xScale, 0, 0, 0)
+	b.BackgroundColor3 = STYLES.CardColor
+	b.TextColor3 = STYLES.TextColor
+	b.Font = Enum.Font.SourceSansBold
+	b.TextSize = 10
+	b.Parent = volRow
+	applyStyle(b, 3, true)
+	b.MouseButton1Click:Connect(cb)
+	return b
+end
+
+makeVolBtn("−", 0.35, function()
+	musicVolume = math.max(0, math.floor((musicVolume - 0.25) * 100 + 0.5) / 100)
+	musicSound.Volume = musicVolume
+	volLbl.Text = ("Vol: %d%%"):format(math.floor(musicVolume * 100))
+	saveAllConfig()
+end)
+makeVolBtn("+", 0.57, function()
+	musicVolume = math.min(5, math.floor((musicVolume + 0.25) * 100 + 0.5) / 100)
+	musicSound.Volume = musicVolume
+	volLbl.Text = ("Vol: %d%%"):format(math.floor(musicVolume * 100))
+	saveAllConfig()
+end)
+makeVolBtn("⏹", 0.80, function()
+	stopMusic()
+end)
+
+-- ====================== ADICIONAR / RENOMEAR MÚSICA ======================
+createLabel("➕ Adicionar / Renomear", page, 12, 8)
+
+local idBox = Instance.new("TextBox")
+idBox.PlaceholderText = "ID da música (só números)"
+idBox.Text = ""
+idBox.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 16)
+idBox.BackgroundColor3 = STYLES.CardColor
+idBox.TextColor3 = STYLES.TextColor
+idBox.Font = Enum.Font.SourceSans
+idBox.TextSize = 9
+idBox.ClearTextOnFocus = false
+idBox.Parent = page
+applyStyle(idBox, 3, true)
+
+local nameBox = Instance.new("TextBox")
+nameBox.PlaceholderText = "Nome da música"
+nameBox.Text = ""
+nameBox.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 16)
+nameBox.BackgroundColor3 = STYLES.CardColor
+nameBox.TextColor3 = STYLES.TextColor
+nameBox.Font = Enum.Font.SourceSans
+nameBox.TextSize = 9
+nameBox.ClearTextOnFocus = false
+nameBox.Parent = page
+applyStyle(nameBox, 3, true)
+
+local addRow = Instance.new("Frame")
+addRow.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 18)
+addRow.BackgroundTransparency = 1
+addRow.Parent = page
+
+local function makeAddBtn(text, xScale, wScale, color, cb)
+	local b = Instance.new("TextButton")
+	b.Text = text
+	b.Size = UDim2.new(wScale, 0, 1, 0)
+	b.Position = UDim2.new(xScale, 0, 0, 0)
+	b.BackgroundColor3 = color or STYLES.CardColor
+	b.TextColor3 = STYLES.TextColor
+	b.Font = Enum.Font.SourceSansBold
+	b.TextSize = 8
+	b.Parent = addRow
+	applyStyle(b, 3, true)
+	b.MouseButton1Click:Connect(cb)
+	return b
+end
+
+local renderPlaylist -- forward
+
+makeAddBtn("➕ ADD", 0, 0.32, STYLES.GreenColor, function()
+	local rawId = idBox.Text:gsub("%s+", "")
+	local nome = nameBox.Text ~= "" and nameBox.Text or ("Música " .. (#Playlist + 1))
+	if rawId == "" then
+		idBox.Text = ""
+		idBox.PlaceholderText = "⚠️ Cole o ID!"
+		task.wait(1.2)
+		idBox.PlaceholderText = "ID da música (só números)"
+		return
+	end
+	-- limpa se veio com rbxassetid://
+	rawId = rawId:gsub("rbxassetid://", "")
+	table.insert(Playlist, { id = "rbxassetid://" .. rawId, name = nome })
+	saveAllConfig()
+	idBox.Text = ""
+	nameBox.Text = ""
+	if renderPlaylist then renderPlaylist() end
+	refreshTrackName()
+end)
+
+makeAddBtn("✏️ RENAME", 0.34, 0.32, STYLES.AccentColor, function()
+	local nome = nameBox.Text
+	if nome == "" or not Playlist[currentTrack] then return end
+	Playlist[currentTrack].name = nome
+	saveAllConfig()
+	nameBox.Text = ""
+	refreshTrackName()
+	if renderPlaylist then renderPlaylist() end
+end)
+
+-- Mini UI de confirmação de exclusão
+local confirmFrame = Instance.new("Frame")
+confirmFrame.Name = "ConfirmDelete"
+confirmFrame.Size = UDim2.new(0.92, 0, 0, 70)
+confirmFrame.Position = UDim2.new(0.04, 0, 0.35, 0)
+confirmFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+confirmFrame.Visible = false
+confirmFrame.ZIndex = 50
+confirmFrame.Parent = tela -- fixo na tela do DIE (não some no scroll)
+applyStyle(confirmFrame, 8, true, STYLES.RedColor)
+confirmFrame.Size = UDim2.new(0.88, 0, 0, 72)
+confirmFrame.Position = UDim2.new(0.06, 0, 0.32, 0)
+confirmFrame.AnchorPoint = Vector2.new(0, 0)
+
+local confirmLbl = Instance.new("TextLabel")
+confirmLbl.Size = UDim2.new(1, -8, 0, 28)
+confirmLbl.Position = UDim2.new(0, 4, 0, 4)
+confirmLbl.BackgroundTransparency = 1
+confirmLbl.TextColor3 = STYLES.TextColor
+confirmLbl.Font = Enum.Font.SourceSansBold
+confirmLbl.TextSize = 10
+confirmLbl.TextWrapped = true
+confirmLbl.Text = "Excluir esta música?"
+confirmLbl.ZIndex = 51
+confirmLbl.Parent = confirmFrame
+
+local confirmYes = Instance.new("TextButton")
+confirmYes.Text = "SIM"
+confirmYes.Size = UDim2.new(0.42, 0, 0, 22)
+confirmYes.Position = UDim2.new(0.05, 0, 0, 38)
+confirmYes.BackgroundColor3 = STYLES.RedColor
+confirmYes.TextColor3 = Color3.new(1,1,1)
+confirmYes.Font = Enum.Font.SourceSansBold
+confirmYes.TextSize = 11
+confirmYes.ZIndex = 51
+confirmYes.Parent = confirmFrame
+applyStyle(confirmYes, 4, true)
+
+local confirmNo = Instance.new("TextButton")
+confirmNo.Text = "NÃO"
+confirmNo.Size = UDim2.new(0.42, 0, 0, 22)
+confirmNo.Position = UDim2.new(0.53, 0, 0, 38)
+confirmNo.BackgroundColor3 = STYLES.GreenColor
+confirmNo.TextColor3 = Color3.new(1,1,1)
+confirmNo.Font = Enum.Font.SourceSansBold
+confirmNo.TextSize = 11
+confirmNo.ZIndex = 51
+confirmNo.Parent = confirmFrame
+applyStyle(confirmNo, 4, true)
+
+local pendingDeleteIndex = nil
+
+local function openConfirmDelete(index)
+	if not Playlist[index] then return end
+	pendingDeleteIndex = index
+	local nome = Playlist[index].name or ("#" .. index)
+	confirmLbl.Text = 'Excluir "' .. nome .. '"?'
+	confirmFrame.Visible = true
+end
+
+local function closeConfirmDelete()
+	pendingDeleteIndex = nil
+	confirmFrame.Visible = false
+end
+
+confirmNo.MouseButton1Click:Connect(closeConfirmDelete)
+
+confirmYes.MouseButton1Click:Connect(function()
+	if not pendingDeleteIndex or not Playlist[pendingDeleteIndex] then
+		closeConfirmDelete()
+		return
+	end
+	local idx = pendingDeleteIndex
+	closeConfirmDelete()
+	table.remove(Playlist, idx)
+	if currentTrack > #Playlist then currentTrack = math.max(1, #Playlist) end
+	if currentTrack == idx or currentTrack > #Playlist then
+		wasPaused = false
+		stopMusic()
+		if #Playlist > 0 then loadTrack(currentTrack, true) end
+	elseif currentTrack > idx then
+		currentTrack = currentTrack - 1
+	end
+	saveAllConfig()
+	refreshTrackName()
+	if renderPlaylist then renderPlaylist() end
+end)
+
+makeAddBtn("❌ DEL", 0.68, 0.32, STYLES.RedColor, function()
+	if #Playlist == 0 then return end
+	openConfirmDelete(currentTrack)
+end)
+
+-- Playlist list
+createLabel("Playlist", page, 12, 8)
+
+local playlistScroll = Instance.new("ScrollingFrame")
+playlistScroll.Size = UDim2.new(CONTENT_WIDTH, 0, 0, 55)
+playlistScroll.BackgroundColor3 = STYLES.CardColor
+playlistScroll.BackgroundTransparency = 0.3
+playlistScroll.ScrollBarThickness = 2
+playlistScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+playlistScroll.Parent = page
+applyStyle(playlistScroll, 4, true)
+
+local plLayout = Instance.new("UIListLayout")
+plLayout.Padding = UDim.new(0, 2)
+plLayout.Parent = playlistScroll
+plLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	playlistScroll.CanvasSize = UDim2.new(0, 0, 0, plLayout.AbsoluteContentSize.Y + 4)
+end)
+
+renderPlaylist = function()
+	for _, c in ipairs(playlistScroll:GetChildren()) do
+		if not c:IsA("UIListLayout") then c:Destroy() end
+	end
+	for i, track in ipairs(Playlist) do
+		local btn = Instance.new("TextButton")
+		btn.Text = (i == currentTrack and "▶ " or "  ") .. track.name
+		btn.Size = UDim2.new(1, -4, 0, 14)
+		btn.BackgroundColor3 = (i == currentTrack) and STYLES.AccentColor or STYLES.CardColor
+		btn.TextColor3 = STYLES.TextColor
+		btn.Font = Enum.Font.SourceSansBold
+		btn.TextSize = 8
+		btn.TextXAlignment = Enum.TextXAlignment.Left
+		btn.Parent = playlistScroll
+		applyStyle(btn, 2, false)
+		local p = Instance.new("UIPadding")
+		p.PaddingLeft = UDim.new(0, 4)
+		p.Parent = btn
+		btn.MouseButton1Click:Connect(function()
+			wasPaused = false
+			loadTrack(i, true)
+			playMusic()
+			refreshTrackName()
+			renderPlaylist()
+		end)
+	end
+end
+
+renderPlaylist()
+if #Playlist > 0 then
+	loadTrack(math.clamp(currentTrack, 1, #Playlist), true)
+else
+	loadTrack(1, true)
+end
+refreshTrackName()
+refreshPlayBtn()
+
+-- aplica volume e tema salvos na UI
+musicSound.Volume = musicVolume
+if volLbl then volLbl.Text = ("Vol: %d%%"):format(math.floor(musicVolume * 100)) end
+if strokeTextBtn then
+	strokeTextBtn.Text = textStrokeEnabled and "✏️ UIStroke TEXTO: ON" or "✏️ UIStroke TEXTO: OFF"
+end
+if thickBtn then
+	thickBtn.Text = "📏 ESPESSURA STROKE: " .. tostring(currentStrokeThick)
+end
+-- reaplica cores de fundo/card nos elementos já criados
+for _, desc in ipairs(page:GetDescendants()) do
+	if (desc:IsA("TextButton") or desc:IsA("TextBox") or desc:IsA("Frame")) and desc.BackgroundTransparency < 0.5 then
+		if desc.Name ~= "ListContainer" and desc.Name ~= "ConfirmDelete" then
+			desc.BackgroundColor3 = STYLES.CardColor
+		end
+	end
+end
+updateGuiTheme()
+
+createLabel("(Aba Perfil + Música v3.2)", page, 12, 8)
+
+local hitPerfil = base:FindFirstChild("aba de perfil")
+if hitPerfil then
+	local hb = hitPerfil:FindFirstChild("Hitbox")
+	if hb then
+		hb.MouseButton1Click:Connect(function()
+			showThisPage(page)
+		end)
+	end
+end
+
+-- Salva tudo ao sair / quando o personagem some
+Players.PlayerRemoving:Connect(function(plr)
+	if plr == LP then
+		saveAllConfig()
+	end
+end)
+game:BindToClose(function()
+	saveAllConfig()
+	task.wait(0.3)
+end)
+-- autosave a cada 30s enquanto o script roda
+task.spawn(function()
+	while page and page.Parent do
+		task.wait(30)
+		saveAllConfig()
+	end
+end)
+
+print("Abyss DIE — Perfil + Music Player v3.2 (confirm delete + auto-save config)")
